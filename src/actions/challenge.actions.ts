@@ -10,20 +10,32 @@ export async function getChallengeStatus() {
 
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka' }).format(new Date());
 
-  // FIX: .single() এর বদলে .maybeSingle() ব্যবহার করা হয়েছে (0 row পেলেও ক্র্যাশ করবে না)
+  // ১. বর্তমান Attempt Number আনা
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('current_attempt')
+    .eq('id', session.user.id)
+    .single();
+    
+  const currentAttemptNum = profile?.current_attempt || 1;
+
+  // ২. শুধুমাত্র বর্তমান Attempt-এর প্রথম লগ বের করা (যাতে নতুন জার্নিতে Day 1 থেকে শুরু হয়)
   const { data: firstLog } = await supabase
     .from('daily_logs')
     .select('log_date')
     .eq('user_id', session.user.id)
+    .eq('attempt_number', currentAttemptNum)
     .order('log_date', { ascending: true })
     .limit(1)
     .maybeSingle();
 
+  // ৩. আজকে লগ করেছে কিনা (বর্তমান Attempt-এ)
   const { data: todayLog } = await supabase
     .from('daily_logs')
     .select('*')
     .eq('user_id', session.user.id)
     .eq('log_date', today)
+    .eq('attempt_number', currentAttemptNum)
     .maybeSingle();
 
   let currentDay = 1;

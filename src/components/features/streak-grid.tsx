@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Check, X, RefreshCw } from "lucide-react";
+import { useEffect, useState, useRef } from "react";
+import { Check, X, RefreshCw, CalendarDays, ShieldAlert, ChevronLeft, ChevronRight } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
-// টাইপ ডিক্লেয়ারেশন
 type DayStatus = 'success' | 'failed' | 'pending';
 interface Attempt {
   id: number;
   name: string;
+  startDate: string | null;
+  endDate: string | null;
+  daysSurvived: number;
   days: DayStatus[];
   isFailed: boolean;
 }
@@ -19,69 +21,64 @@ export default function StreakGrid() {
   const [isRestarting, setIsRestarting] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  // স্ক্রলিং কন্ট্রোল করার জন্য Ref
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const supabase = createClient();
 
   useEffect(() => {
     loadJourneyData();
   }, []);
 
-  // ডাটাবেস থেকে আসল ডেটা টেনে আনার ম্যাজিক ফাংশন
+  const formatDate = (dateString: string) => {
+    if (!dateString) return "";
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  };
+
   const loadJourneyData = async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user) return;
 
-    // ১. প্রোফাইল থেকে বর্তমান Attempt বের করা
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('current_attempt')
-      .eq('id', session.user.id)
-      .single();
-    
+    const { data: profile } = await supabase.from('profiles').select('current_attempt').eq('id', session.user.id).single();
     const currentAttemptNum = profile?.current_attempt || 1;
 
-    // ২. এই ইউজারের জীবনের সব লগ নিয়ে আসা
-    const { data: logs } = await supabase
-      .from('daily_logs')
-      .select('*')
-      .eq('user_id', session.user.id)
-      .order('log_date', { ascending: true });
+    const { data: logs } = await supabase.from('daily_logs').select('*').eq('user_id', session.user.id).order('log_date', { ascending: true });
 
-    // ৩. লগগুলোকে Attempt অনুযায়ী আলাদা করা (Grouping)
     const attemptsMap = new Map<number, any[]>();
     for (let i = 1; i <= currentAttemptNum; i++) attemptsMap.set(i, []); 
     
     logs?.forEach(log => {
       const attemptNum = log.attempt_number || 1;
-      if (attemptsMap.has(attemptNum)) {
-        attemptsMap.get(attemptNum)?.push(log);
-      }
+      if (attemptsMap.has(attemptNum)) attemptsMap.get(attemptNum)?.push(log);
     });
 
     const parsedHistory: Attempt[] = [];
     let currentFailed = false;
 
-    // ৪. উল্টো দিক থেকে লুপ চালানো (যাতে Current Journey শুরুতে থাকে)
     for (let i = currentAttemptNum; i >= 1; i--) {
       const attemptLogs = attemptsMap.get(i) || [];
       const days: DayStatus[] = Array(41).fill('pending');
       let hasRelapse = false;
+      let survivedCount = 0;
 
       attemptLogs.forEach((log, index) => {
         if (index < 41) {
-          if (log.is_relapse) {
-            days[index] = 'failed';
-            hasRelapse = true;
-          } else {
-            days[index] = 'success';
-          }
+          if (log.is_relapse) { days[index] = 'failed'; hasRelapse = true; } 
+          else { days[index] = 'success'; survivedCount++; }
         }
       });
+
+      const startDate = attemptLogs.length > 0 ? formatDate(attemptLogs[0].log_date) : null;
+      const endDate = attemptLogs.length > 0 ? formatDate(attemptLogs[attemptLogs.length - 1].log_date) : null;
 
       if (i === currentAttemptNum && hasRelapse) currentFailed = true;
 
       parsedHistory.push({
         id: i,
         name: i === currentAttemptNum ? "Current Journey" : `Attempt ${i}`,
+        startDate,
+        endDate: (i === currentAttemptNum && !hasRelapse) ? "Present" : endDate,
+        daysSurvived: survivedCount,
         days: days,
         isFailed: hasRelapse
       });
@@ -92,56 +89,96 @@ export default function StreakGrid() {
     setLoading(false);
   };
 
-  // 🚀 নতুন জার্নি শুরু করার সেই ফাংশনটি!
   const handleRestartJourney = async () => {
     setIsRestarting(true);
     const { data: { session } } = await supabase.auth.getSession();
     
     if (session?.user) {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('current_attempt')
-        .eq('id', session.user.id)
-        .single();
-
+      const { data: profile } = await supabase.from('profiles').select('current_attempt').eq('id', session.user.id).single();
       if (profile) {
-        // Attempt Number ১ বাড়িয়ে দেওয়া হলো
-        await supabase
-          .from('profiles')
-          .update({ current_attempt: profile.current_attempt + 1 })
-          .eq('id', session.user.id);
-          
+        await supabase.from('profiles').update({ current_attempt: profile.current_attempt + 1 }).eq('id', session.user.id);
         alert("New Journey Initiated! Rise and rewire.");
-        window.location.reload(); // পেজ রিলোড দিলে সব নতুন হয়ে যাবে
+        window.location.reload();
       }
     }
     setIsRestarting(false);
   };
 
-  if (loading) {
-    return <div className="animate-pulse text-challenge-sage text-center text-sm py-10 font-bold tracking-widest">SYNCING GRID...</div>;
-  }
+  // 🚀 ডানে-বামে স্ক্রল করার ফাংশন
+  const scroll = (direction: 'left' | 'right') => {
+    if (scrollContainerRef.current) {
+      const scrollAmount = scrollContainerRef.current.clientWidth;
+      scrollContainerRef.current.scrollBy({
+        left: direction === 'left' ? -scrollAmount : scrollAmount,
+        behavior: 'smooth'
+      });
+    }
+  };
+
+  if (loading) return <div className="animate-pulse text-challenge-sage text-center text-sm py-10 font-bold tracking-widest">SYNCING GRID...</div>;
 
   return (
     <div className="w-full space-y-4">
-      <h2 className="text-sm font-extrabold text-challenge-sage tracking-widest uppercase px-1">
-        41-Days Journey Map
-      </h2>
       
-      {/* Horizontal Swipe Container */}
-      <div className="flex overflow-x-auto snap-x snap-mandatory gap-4 pb-4 hide-scrollbar">
+      {/* 🚀 Header with Navigation Buttons */}
+      <div className="flex justify-between items-center px-1 mb-2">
+        <h2 className="text-sm font-extrabold text-challenge-sage tracking-widest uppercase">
+          Journey Records
+        </h2>
+        
+        {/* < > Buttons */}
+        <div className="flex gap-2">
+          <button 
+            onClick={() => scroll('left')} 
+            className="p-1.5 bg-black/50 border border-challenge-brown/30 rounded-lg hover:bg-challenge-brown/20 text-challenge-cream transition-colors active:scale-95"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          <button 
+            onClick={() => scroll('right')} 
+            className="p-1.5 bg-black/50 border border-challenge-brown/30 rounded-lg hover:bg-challenge-brown/20 text-challenge-cream transition-colors active:scale-95"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      
+      {/* Horizontal Swipe Container (with Ref) */}
+      <div 
+        ref={scrollContainerRef}
+        className="flex overflow-x-auto snap-x snap-mandatory gap-4 pb-4 hide-scrollbar scroll-smooth"
+      >
         {history.map((attempt, index) => (
           <div 
             key={attempt.id} 
-            className={`min-w-[90%] md:min-w-full snap-center rounded-3xl p-5 border-2 ${
-              index === 0 ? 'bg-[#051726]/80 border-challenge-brown/50 shadow-2xl' : 'bg-black/60 border-red-900/30 opacity-75'
+            className={`min-w-[92%] md:min-w-full snap-center rounded-3xl p-5 border-2 transition-all ${
+              index === 0 && !attempt.isFailed ? 'bg-[#051726]/90 border-challenge-brown/50 shadow-2xl' : 
+              attempt.isFailed ? 'bg-red-950/20 border-red-900/30 opacity-80' : 
+              'bg-black/60 border-challenge-brown/20 opacity-80'
             }`}
           >
-            <div className="flex justify-between items-center mb-4">
-              <h3 className={`font-bold text-sm tracking-wide ${index === 0 ? 'text-challenge-cream' : 'text-gray-500'}`}>
-                {attempt.name}
-              </h3>
-              {attempt.isFailed && <span className="text-xs bg-red-900/30 text-red-500 px-2 py-1 rounded-md font-bold">FAILED</span>}
+            <div className="flex justify-between items-start mb-6">
+              <div>
+                <h3 className={`font-black text-lg tracking-wide flex items-center gap-2 ${index === 0 && !attempt.isFailed ? 'text-challenge-cream' : 'text-gray-400'}`}>
+                  {attempt.name}
+                  {attempt.isFailed && <ShieldAlert className="w-4 h-4 text-red-500" />}
+                </h3>
+                <div className="flex items-center gap-1.5 text-[11px] font-bold text-challenge-sage mt-1.5">
+                  <CalendarDays className="w-3.5 h-3.5" />
+                  <span>{attempt.startDate ? `${attempt.startDate} - ${attempt.endDate}` : "Awaiting first log"}</span>
+                </div>
+              </div>
+
+              <div className="text-right">
+                {attempt.isFailed ? (
+                  <span className="text-[10px] bg-red-900/30 text-red-500 px-2 py-1 rounded-md font-bold block mb-1 border border-red-500/20">FAILED</span>
+                ) : index === 0 ? (
+                  <span className="text-[10px] bg-green-900/30 text-green-500 px-2 py-1 rounded-md font-bold block mb-1 border border-green-500/20">ACTIVE</span>
+                ) : null}
+                <span className={`text-[10px] font-bold ${attempt.isFailed ? 'text-red-400/70' : 'text-challenge-brown'}`}>
+                  Survived: {attempt.daysSurvived} Days
+                </span>
+              </div>
             </div>
 
             {/* 41 Boxes Grid */}
@@ -165,14 +202,9 @@ export default function StreakGrid() {
         ))}
       </div>
 
-      {/* 🔴 যদি বর্তমান জার্নি ফেইল করে, তবে রিস্টার্ট বাটন ভেসে উঠবে */}
       {isCurrentFailed && (
-        <div className="mt-4 text-center animate-in slide-in-from-bottom-4 duration-500">
-          <button 
-            onClick={handleRestartJourney}
-            disabled={isRestarting}
-            className="w-full flex items-center justify-center gap-2 bg-red-950/80 border border-red-500/50 hover:bg-red-900 text-red-100 font-black tracking-widest text-sm py-4 rounded-2xl shadow-[0_0_20px_rgba(220,38,38,0.3)] transition-all disabled:opacity-50"
-          >
+        <div className="mt-2 text-center animate-in slide-in-from-bottom-4 duration-500 pb-4">
+          <button onClick={handleRestartJourney} disabled={isRestarting} className="w-full flex items-center justify-center gap-2 bg-red-950/80 border border-red-500/50 hover:bg-red-900 text-red-100 font-black tracking-widest text-sm py-4 rounded-2xl shadow-[0_0_20px_rgba(220,38,38,0.3)] transition-all disabled:opacity-50">
             <RefreshCw className={`w-5 h-5 ${isRestarting ? 'animate-spin' : ''}`} />
             {isRestarting ? "INITIALIZING..." : "INITIATE NEW JOURNEY"}
           </button>
