@@ -8,50 +8,48 @@ export async function getChallengeStatus() {
   
   if (!session?.user) return null;
 
-  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka' }).format(new Date());
+  // আজকের তারিখ (বাংলাদেশ সময় অনুযায়ী)
+  const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka' }).format(new Date());
+  const todayDate = new Date(todayStr);
 
-  // ১. বর্তমান Attempt Number আনা
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('current_attempt')
-    .eq('id', session.user.id)
-    .single();
-    
+  const { data: profile } = await supabase.from('profiles').select('current_attempt').eq('id', session.user.id).single();
   const currentAttemptNum = profile?.current_attempt || 1;
 
-  // ২. শুধুমাত্র বর্তমান Attempt-এর প্রথম লগ বের করা (যাতে নতুন জার্নিতে Day 1 থেকে শুরু হয়)
-  const { data: firstLog } = await supabase
+  // বর্তমান জার্নির সবগুলো লগ ডেট অনুযায়ী নিয়ে আসা
+  const { data: logs } = await supabase
     .from('daily_logs')
     .select('log_date')
     .eq('user_id', session.user.id)
     .eq('attempt_number', currentAttemptNum)
-    .order('log_date', { ascending: true })
-    .limit(1)
-    .maybeSingle();
+    .order('log_date', { ascending: true });
 
-  // ৩. আজকে লগ করেছে কিনা (বর্তমান Attempt-এ)
-  const { data: todayLog } = await supabase
-    .from('daily_logs')
-    .select('*')
-    .eq('user_id', session.user.id)
-    .eq('log_date', today)
-    .eq('attempt_number', currentAttemptNum)
-    .maybeSingle();
-
+  let pendingDateStr = todayStr;
   let currentDay = 1;
+  let isUpToDate = false;
 
-  if (firstLog) {
-    const start = new Date(firstLog.log_date);
-    const current = new Date(today);
-    const diffTime = current.getTime() - start.getTime();
-    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  if (logs && logs.length > 0) {
+    const lastLogDateStr = logs[logs.length - 1].log_date;
+    const lastLogDate = new Date(lastLogDateStr);
+
+    // পরবর্তী এক্সপেক্টেড তারিখ = শেষ লগের তারিখ + ১ দিন
+    const nextExpectedDate = new Date(lastLogDate);
+    nextExpectedDate.setDate(nextExpectedDate.getDate() + 1);
     
-    currentDay = diffDays >= 0 ? diffDays + 1 : 1;
+    pendingDateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka' }).format(nextExpectedDate);
+
+    // যদি পরবর্তী এক্সপেক্টেড তারিখ আজকের চেয়ে বড় হয়, তার মানে সে আপ-টু-ডেট!
+    if (nextExpectedDate > todayDate) {
+      isUpToDate = true;
+      currentDay = logs.length;
+    } else {
+      currentDay = logs.length + 1; // যে দিনের ফর্ম পূরণ করতে হবে
+    }
   }
 
   return {
     currentDay,
-    isTodayLogged: !!todayLog,
-    todayLogData: todayLog || null,
+    pendingDateStr, // যে তারিখের ফর্মটা এখন ইউজারকে দেখাতে হবে
+    isUpToDate,
+    todayStr
   };
 }

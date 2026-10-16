@@ -5,18 +5,17 @@ import { CheckCircle2, Circle, AlertTriangle, Save } from "lucide-react";
 import { useChallengeStore } from "@/store/challenge-store";
 import { createClient } from "@/lib/supabase/client";
 
-export default function TaskChecklist() {
+// 🚀 প্যারেন্ট থেকে pendingDateStr রিসিভ করা হচ্ছে
+export default function TaskChecklist({ pendingDateStr }: { pendingDateStr: string }) {
   const { tasks, toggleTask, setWalkMinutes, resetTasks } = useChallengeStore();
   const [isSaving, setIsSaving] = useState(false);
   
-  // সরাসরি ব্রাউজার ক্লায়েন্ট ব্যবহার করছি
   const supabase = createClient();
 
   const handleSave = async () => {
     setIsSaving(true);
     
     try {
-      // ১. আগে চেক করবে ইউজার আসলেও লগইন করা আছে কিনা
       const { data: { session } } = await supabase.auth.getSession();
       
       if (!session?.user) {
@@ -25,10 +24,6 @@ export default function TaskChecklist() {
         return;
       }
 
-      // ২. বাংলাদেশ সময় অনুযায়ী আজকের তারিখ
-      const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka' }).format(new Date());
-
-      // ৩. আগে ইউজারের প্রোফাইল থেকে তার বর্তমান Attempt Number আনবো
       const { data: profile } = await supabase
         .from('profiles')
         .select('current_attempt')
@@ -37,14 +32,14 @@ export default function TaskChecklist() {
         
       const currentAttempt = profile?.current_attempt || 1;
 
-      // ৪. Mandatory টাস্ক মিস করেছে কিনা চেক করা (যেকোনো একটা false হলেই Relapse!)
+      // Mandatory টাস্ক মিস করেছে কিনা চেক করা (যেকোনো একটা false হলেই Relapse!)
       const isRelapse = !tasks.prayers_5_waqt || !tasks.no_porn || !tasks.no_masturbation;
 
       const payload: any = {
         user_id: session.user.id,
-        log_date: today,
-        attempt_number: currentAttempt, // কোন জার্নিতে আছে সেটা সেভ হলো
-        is_relapse: isRelapse, // ফেইল করেছে কিনা সেটা সেভ হলো
+        log_date: pendingDateStr, // 🚀 আজকের বদলে আটকে থাকা তারিখটা (Pending Date) সেভ হবে
+        attempt_number: currentAttempt, 
+        is_relapse: isRelapse, 
         prayers_5_waqt: tasks.prayers_5_waqt,
         no_porn: tasks.no_porn,
         no_masturbation: tasks.no_masturbation,
@@ -53,7 +48,6 @@ export default function TaskChecklist() {
         walk_minutes: tasks.walk_minutes,
       };
 
-      // ৫. সরাসরি ক্লায়েন্ট থেকে ডাটাবেসে সেভ
       const { error } = await supabase
         .from('daily_logs')
         .upsert(payload, { onConflict: 'user_id, log_date' });
@@ -61,7 +55,12 @@ export default function TaskChecklist() {
       if (error) {
         alert("Failed to save: " + error.message);
       } else {
-        // ডেটা সেভ হওয়ার সাথে সাথে সব মুছে ফেলবে এবং ড্যাশবোর্ড আপডেট করবে
+        if (isRelapse) {
+          // 🔴 ফেইল করেছে! সাথে সাথে নতুন জার্নি শুরু (Attempt + 1)
+          await supabase.from('profiles').update({ current_attempt: currentAttempt + 1 }).eq('id', session.user.id);
+          alert(`PROTOCOL BREACHED ON ${pendingDateStr}. \nAttempt Failed. Initiating New Journey.`);
+        }
+        
         resetTasks();
         window.location.reload(); 
       }
